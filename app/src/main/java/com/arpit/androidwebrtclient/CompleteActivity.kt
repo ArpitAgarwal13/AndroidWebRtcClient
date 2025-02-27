@@ -16,9 +16,13 @@ import org.webrtc.AudioTrack
 import org.webrtc.Camera1Enumerator
 import org.webrtc.Camera2Enumerator
 import org.webrtc.CameraEnumerator
+import org.webrtc.CandidatePairChangeEvent
 import org.webrtc.DataChannel
+import org.webrtc.DefaultVideoDecoderFactory
 import org.webrtc.EglBase
+import org.webrtc.HardwareVideoEncoderFactory
 import org.webrtc.IceCandidate
+import org.webrtc.IceCandidateErrorEvent
 import org.webrtc.MediaConstraints
 import org.webrtc.MediaStream
 import org.webrtc.MediaStreamTrack
@@ -31,9 +35,11 @@ import org.webrtc.PeerConnection.SignalingState
 import org.webrtc.PeerConnectionFactory
 import org.webrtc.PeerConnectionFactory.InitializationOptions
 import org.webrtc.RtpCapabilities
-import org.webrtc.RtpParameters
-import org.webrtc.RtpSender
+import org.webrtc.RtpReceiver
+import org.webrtc.RtpTransceiver
 import org.webrtc.SessionDescription
+import org.webrtc.SimulcastVideoEncoderFactory
+import org.webrtc.SoftwareVideoEncoderFactory
 import org.webrtc.SurfaceTextureHelper
 import org.webrtc.VideoCapturer
 import org.webrtc.VideoTrack
@@ -47,9 +53,9 @@ class CompleteActivity : AppCompatActivity() {
 
     // video audio config
     private var binding : ActivitySamplePeerConnectionBinding? = null
-    private var width = 1280
-    private var height = 720
-    private var fps = 30
+    private var width = 720
+    private var height = 480
+    private var fps = 15
     private var localVideoTrack: VideoTrack? = null
     private val videoTrackId = "ARDAMSv0"
     private var localAudioTrack: AudioTrack? = null
@@ -80,8 +86,6 @@ class CompleteActivity : AppCompatActivity() {
             requestType = extras.getString("request") ?: ""
             if (requestType == "joinSession") sessionId = extras.getString("sessionId") ?: ""
             iceServerModel = Gson().fromJson(iceServers, IceServerModel::class.java)
-            // Log the values to verify
-//            Log.d(TAG, "IceServers: " + iceServers);
             Log.d(tag, "IceServers Converted: $iceServerModel")
             Log.d(tag, "Request: $requestType")
             Log.d(tag, "SessionId: $sessionId")
@@ -104,6 +108,9 @@ class CompleteActivity : AppCompatActivity() {
 
         initializePeerConnections()
 
+        startStreamingMedia()
+
+
         if (requestType.equals("startSession", ignoreCase = true)) {
             registerSession()
             openSSEConnection()
@@ -111,8 +118,6 @@ class CompleteActivity : AppCompatActivity() {
             registerSession()
             openSSEConnection()
         }
-
-        startStreamingMedia()
     }
 
     // media streams initialization
@@ -133,17 +138,17 @@ class CompleteActivity : AppCompatActivity() {
     private fun initializeMediaStreams() {
         val audioConstraints = MediaConstraints()
         val videoCapturer: VideoCapturer? = createVideoCapturer()
-        val videoSource = factory!!.createVideoSource(false) // false for camera capture
+        val videoSource = factory?.createVideoSource(false) // false for camera capture
         val surfaceTextureHelper =
             SurfaceTextureHelper.create("CaptureThread", rootEglBase!!.eglBaseContext)
         videoCapturer?.initialize(
             surfaceTextureHelper,
             applicationContext,
-            videoSource.capturerObserver
+            videoSource?.capturerObserver
         )
         videoCapturer?.startCapture(width, height, fps)
         localVideoTrack =
-            factory!!.createVideoTrack(videoTrackId, videoSource)
+            factory?.createVideoTrack(videoTrackId, videoSource)
         localVideoTrack?.setEnabled(true)
         localVideoTrack?.addSink(binding?.surfaceView)
 
@@ -159,7 +164,6 @@ class CompleteActivity : AppCompatActivity() {
         } else {
             videoCapturer = createCameraCapturer(Camera1Enumerator(true))
         }
-        //        videoCapturer = new CustomVideoCapturer(1280,720,30);
         return videoCapturer
     }
 
@@ -189,54 +193,9 @@ class CompleteActivity : AppCompatActivity() {
     }
 
     private fun startStreamingMedia() {
-        val mediaStream = factory?.createLocalMediaStream("Media_Stream")
-        mediaStream?.addTrack(localAudioTrack)
-        mediaStream?.addTrack(localVideoTrack)
+        peerConnection!!.addTrack(localVideoTrack)
+        peerConnection!!.addTrack(localAudioTrack)
 
-        var rtpSender: RtpSender? = null
-        // video track
-        val videoTrack = mediaStream?.videoTracks?.firstOrNull()
-        videoTrack?.let {
-            rtpSender = peerConnection?.addTrack(it, listOf(mediaStream.id))
-        }
-
-        // Add Audio Track
-//        val audioTrack = mediaStream?.audioTracks?.firstOrNull()
-//        audioTrack?.let {
-//            rtpSender = peerConnection?.addTrack(it, listOf(mediaStream.id))
-//        }
-
-
-        Log.d(tag, "Rtp Sender: ${rtpSender?.streams.toString()}")
-        val transceivers = peerConnection?.transceivers
-        Log.d(tag, "transceivers: ${transceivers.toString()}")
-
-        transceivers?.forEach {
-            Log.d(tag, "transceiver: ${it.mediaType}")
-        }
-
-        val transceiver = transceivers?.find {
-            it.mediaType == MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO
-        }
-        transceiver?.setCodecPreferences(getH264Codec(factory))
-
-
-
-
-
-//        MediaStream videoStream = factory.createLocalMediaStream("ARDAMS");
-//        videoStream.addTrack(videoTrackFromCamera);
-//        MediaStream audioStream = factory.createLocalMediaStream("ARDAMS");
-//        audioStream.addTrack(localAudioTrack);
-//        peerConnection.addStream(videoStream);
-//        peerConnection.addStream(audioStream);
-
-//        MediaStream mediaStream = factory.createLocalMediaStream("ARDAMS");
-//        mediaStream.addTrack(videoTrackFromCamera);
-//        peerConnection.addStream(mediaStream);
-
-//        Log.d(TAG,"Important, sendMessage, got user media: mediaStream: " +
-//                mediaStream + " videoTrack: " + mediaStream.videoTracks.get(0) + " audioTrack: " + mediaStream.audioTracks.get(0));
         Log.d(tag, "startStreamingVideo: added Tracks")
     }
 
@@ -253,9 +212,14 @@ class CompleteActivity : AppCompatActivity() {
             //                .setFieldTrials("WebRTC-H264HighProfile/Enabled/")
             .createInitializationOptions()
         PeerConnectionFactory.initialize(options)
+
+        val hardwareEncoder = HardwareVideoEncoderFactory(rootEglBase?.eglBaseContext, true, true)
+        SimulcastVideoEncoderFactory(hardwareEncoder, SoftwareVideoEncoderFactory())
+
         factory =
             PeerConnectionFactory.builder()
-                //                .setVideoEncoderFactory(new DefaultVideoEncoderFactory(rootEglBase.getEglBaseContext(), true, true))
+                .setVideoEncoderFactory(SimulcastVideoEncoderFactory(hardwareEncoder, SoftwareVideoEncoderFactory()))
+                .setVideoDecoderFactory(DefaultVideoDecoderFactory(rootEglBase?.eglBaseContext))
                 .setOptions(PeerConnectionFactory.Options())
                 .createPeerConnectionFactory()
         Log.d(tag, "Peer Connection Factory Created: $factory")
@@ -290,13 +254,54 @@ class CompleteActivity : AppCompatActivity() {
         val rtcConfig = RTCConfiguration(iceServers)
         Log.d(tag, "Peer Connection Created: rtcConfig: $rtcConfig")
 
-//        MediaConstraints pcConstraints = new MediaConstraints();
         val pcObserver: PeerConnection.Observer = object : PeerConnection.Observer {
             override fun onSignalingChange(signalingState: SignalingState) {
                 Log.d(
                     tag,
                     "onSignalingChange: signalingState: $signalingState"
                 )
+            }
+
+            override fun onStandardizedIceConnectionChange(newState: IceConnectionState?) {
+                super.onStandardizedIceConnectionChange(newState)
+                Log.d(
+                    tag,
+                    "onStandardizedIceConnectionChange $newState"
+                )
+            }
+
+            override fun onConnectionChange(newState: PeerConnection.PeerConnectionState?) {
+                super.onConnectionChange(newState)
+
+                Log.d(tag, "onConnectionChange: $newState")
+            }
+
+            override fun onIceCandidateError(event: IceCandidateErrorEvent?) {
+                super.onIceCandidateError(event)
+
+                Log.d(tag, "onIceCandidateError: $event")
+            }
+
+            override fun onSelectedCandidatePairChanged(event: CandidatePairChangeEvent?) {
+                super.onSelectedCandidatePairChanged(event)
+
+                Log.d(tag, "onSelectedCandidatePairChanged: $event")
+            }
+
+            override fun onAddTrack(receiver: RtpReceiver?, mediaStreams: Array<out MediaStream>?) {
+                super.onAddTrack(receiver, mediaStreams)
+                Log.d(tag, "onAddTrack: $mediaStreams")
+            }
+
+            override fun onRemoveTrack(receiver: RtpReceiver?) {
+                super.onRemoveTrack(receiver)
+
+                Log.d(tag, "onRemoveTrack: $receiver")
+            }
+
+            override fun onTrack(transceiver: RtpTransceiver?) {
+                super.onTrack(transceiver)
+                Log.d(tag, "onTrack: $transceiver")
             }
 
             override fun onIceConnectionChange(iceConnectionState: IceConnectionState) {
@@ -316,8 +321,6 @@ class CompleteActivity : AppCompatActivity() {
                 val message = JSONObject()
                 try {
                     message.put("type", "ice-candidate")
-                    //                    message.put("label", iceCandidate.sdpMLineIndex);
-                    // peer2
                     message.put("target", remotePeerId)
                     val payload = JSONObject()
                     payload.put("candidate", iceCandidate.sdp)
@@ -329,8 +332,6 @@ class CompleteActivity : AppCompatActivity() {
                         "onIceCandidate: sending candidate $message"
                     )
                     httpClient.sendMessage(sessionId, localPeerId, message.toString())
-                    //
-//                    sendMessage(message);
                     Log.d(
                         tag,
                         "Important: sendMessage, onIceCandidate: message: $message"
@@ -345,17 +346,28 @@ class CompleteActivity : AppCompatActivity() {
             }
 
             override fun onAddStream(mediaStream: MediaStream) {
-                Log.d(tag, "onAddStream: videoSize: " + mediaStream.videoTracks.size +
-                            " id: " + mediaStream.id + "audioSize: " + mediaStream.audioTracks.size)
-//                VideoTrack remoteVideoTrack = mediaStream.videoTracks.get(0);
-//                AudioTrack remoteAudioTrack = mediaStream.audioTracks.get(0);
-//                remoteAudioTrack.setEnabled(true);
-//                remoteVideoTrack.setEnabled(true);
-//                remoteVideoTrack.addSink(Pe.surfaceView2);
+                Log.d(tag, "onAddStream: videoSize: " + mediaStream.videoTracks?.size +
+                            " id: " + mediaStream.id + "audioSize: " + mediaStream.audioTracks?.size)
+
+                if(mediaStream.audioTracks != null && mediaStream.audioTracks.size > 0) {
+                    val remoteAudioTrack = mediaStream.audioTracks[0]
+                    remoteAudioTrack.setEnabled(true)
+                }
+                else {
+                    Log.d(tag, "Empty Audio Stream Received")
+                }
+                if(mediaStream.videoTracks != null && mediaStream.videoTracks.size > 0) {
+                    val remoteVideoTrack = mediaStream.videoTracks[0]
+                    remoteVideoTrack.setEnabled(true)
+                    remoteVideoTrack.addSink(binding?.surfaceView2)
+                }
+                else {
+                    Log.d(tag, "Empty Video Stream Received")
+                }
             }
 
             override fun onRemoveStream(mediaStream: MediaStream) {
-                Log.d(tag, "onRemoveStream: ")
+                Log.d(tag, "onRemoveStream: $mediaStream")
             }
 
             override fun onDataChannel(dataChannel: DataChannel) {
@@ -372,33 +384,55 @@ class CompleteActivity : AppCompatActivity() {
 
     // create webrtc offer
     private fun doCall(senderId: String) {
-//        MediaConstraints sdpMediaConstraints = new MediaConstraints();
+        val mediaConstraints = MediaConstraints();
 
-//        sdpMediaConstraints.mandatory.add(
-//                new MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"));
-//        sdpMediaConstraints.mandatory.add(
-//                new MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"));
+        mediaConstraints.mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
+        mediaConstraints.mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
+
+
         peerConnection?.createOffer(object : SimpleSdpObserver() {
             override fun onCreateSuccess(sessionDescription: SessionDescription?) {
                 Log.d(tag, "onCreateSuccess: ")
-                peerConnection?.setLocalDescription(SimpleSdpObserver(), sessionDescription)
-                val message = JSONObject()
-                try {
-                    // peerId
-                    message.put("target", senderId)
-                    message.put("type", "offer")
-                    val payload = JSONObject()
-                    payload.put("type", "offer")
-                    payload.put("sdp", sessionDescription?.description)
-                    message.put("payload", payload)
-                    // ArpitChange:  need to print here temporarily
-                    Log.d(tag, "Important: sendMessage, sending offer, message: $message")
-                    httpClient.sendMessage(sessionId, localPeerId, message.toString())
-                } catch (e: JSONException) {
-                    e.printStackTrace()
+                peerConnection?.setLocalDescription(
+                    object : SimpleSdpObserver() {
+                        override fun onCreateSuccess(p0: SessionDescription?) {
+                            super.onCreateSuccess(p0)
+                            Log.d(tag, "onCreateSuccess: ${p0?.description}")
+                        }
+
+                        override fun onSetSuccess() {
+                            super.onSetSuccess()
+                            val message = JSONObject()
+                            try {
+                                // peerId
+                                message.put("target", senderId)
+                                message.put("type", "offer")
+                                val payload = JSONObject()
+                                payload.put("type", "offer")
+                                payload.put("sdp", sessionDescription?.description)
+                                message.put("payload", payload)
+                                // ArpitChange:  need to print here temporarily
+                                Log.d(
+                                    tag, "sendMessage, sending offer, message: $message"
+                                )
+                                httpClient.sendMessage(sessionId, localPeerId, message.toString())
+                            } catch (e: JSONException) {
+                                e.printStackTrace()
+                            }
+                        }
+                        override fun onCreateFailure(p0: String?) {
+                            super.onCreateFailure(p0)
+                            Log.d(tag, "onCreateFailure: ${p0}")
+
+                        }
+
+                        override fun onSetFailure(p0: String?) {
+                            super.onSetFailure(p0)
+                            Log.d(tag, "onSetFailure: ${p0}")
+                        }
+                    }, sessionDescription)
                 }
-            }
-        }, MediaConstraints())
+        }, mediaConstraints)
     }
 
     // create webrtc answer
@@ -418,7 +452,8 @@ class CompleteActivity : AppCompatActivity() {
                     payload.put("sdp", sessionDescription?.description)
                     message.put("payload", payload)
                     httpClient.sendMessage(sessionId, localPeerId, message.toString())
-                    //                    sendMessage(message);
+
+                    Log.d(tag, "answer sent: $message")
                 } catch (e: JSONException) {
                     e.printStackTrace()
                 }
@@ -435,7 +470,7 @@ class CompleteActivity : AppCompatActivity() {
         if (sessionId.isEmpty()) {
             sessionId = generateSessionId()
         }
-        localPeerId = generatePeerId()
+        if(localPeerId.isEmpty()) localPeerId = generatePeerId()
         Log.d(tag, "Registering Session, sessionId: $sessionId peerId: $localPeerId")
         httpClient.registerSession(sessionId, localPeerId)
     }
@@ -462,7 +497,7 @@ class CompleteActivity : AppCompatActivity() {
 
             @Throws(JSONException::class)
             override fun onMessage(event: String, messageEvent: MessageEvent) {
-                Log.d(tag, "Event: $event")
+                Log.d(tag, "Event: $event, message: ${messageEvent.data}")
 
                 // sending offer
                 val json = JSONObject(messageEvent.data)
@@ -471,6 +506,43 @@ class CompleteActivity : AppCompatActivity() {
                     if (json.getString("type") == "new-peer") {
                         remotePeerId = json.getString("senderId")
                         doCall(remotePeerId)
+                    }
+
+                    else if (json.getString("type") == "offer") {
+                        remotePeerId = json.getString("senderId")
+                        val payload = json.getString("payload")
+                        Log.d(
+                            tag,
+                            "got offer: remotePeerId: " + remotePeerId + "offer payload : " + payload
+                        )
+                        val payloadJson = JSONObject(payload)
+                        val sdp = payloadJson.getString("sdp")
+                        peerConnection?.setRemoteDescription(object : SimpleSdpObserver() {
+                            override fun onSetSuccess() {
+                                super.onSetSuccess()
+                                Log.d(
+                                    tag, "onSetSuccess: " +
+                                            " sdp set successfully," +
+                                            " remote connection created"
+                                )
+                            }
+
+                            override fun onSetFailure(s: String?) {
+                                super.onSetFailure(s)
+                                Log.d(
+                                    tag,
+                                    "onSetFailure: setting sdp failed: $s"
+                                )
+                            }
+                        }, SessionDescription(SessionDescription.Type.OFFER, sdp))
+
+                        Log.d(
+                            tag, "received offer, offer set," +
+                                    " iceGatheringState: " + peerConnection?.iceGatheringState()
+                                    + " remoteSDP: " + peerConnection?.remoteDescription +
+                                    " localSdp: " + peerConnection?.localDescription
+                        )
+                        doAnswer()
                     }
 
                     else if (json.getString("type") == "answer") {
@@ -531,48 +603,6 @@ class CompleteActivity : AppCompatActivity() {
                         })
                     }
 
-                    else if (json.getString("type") == "offer") {
-                        remotePeerId = json.getString("senderId")
-                        val payload = json.getString("payload")
-                        Log.d(
-                            tag,
-                            "got offer: remotePeerId: " + remotePeerId + "offer payload : " + payload
-                        )
-                        val payloadJson = JSONObject(payload)
-                        val sdp = payloadJson.getString("sdp")
-//                        val sessionDescription =
-//                            SessionDescription(SessionDescription.Type.OFFER, sdp)
-//                        Log.d(
-//                            tag, "sessionDescription : " + sessionDescription +
-//                                    " sdp: " + sessionDescription.description
-//                        )
-                        peerConnection?.setRemoteDescription(object : SimpleSdpObserver() {
-                            override fun onSetSuccess() {
-                                super.onSetSuccess()
-                                Log.d(
-                                    tag, "onSetSuccess: " +
-                                            " sdp set successfully," +
-                                            " remote connection created"
-                                )
-                            }
-
-                            override fun onSetFailure(s: String?) {
-                                super.onSetFailure(s)
-                                Log.d(
-                                    tag,
-                                    "onSetFailure: setting sdp failed: $s"
-                                )
-                            }
-                        }, SessionDescription(SessionDescription.Type.OFFER, sdp))
-
-                        Log.d(
-                            tag, "received offer, offer set," +
-                                    " iceGatheringState: " + peerConnection?.iceGatheringState()
-                                    + " remoteSDP: " + peerConnection?.remoteDescription +
-                                    " localSdp: " + peerConnection?.localDescription
-                        )
-                        doAnswer()
-                    }
                 } catch (e: Exception) {
                     Log.d(tag, "Exception In Json Parsing, e: " + e.message)
                 }
@@ -587,6 +617,7 @@ class CompleteActivity : AppCompatActivity() {
                 t.printStackTrace()
             }
         }, URI.create(url)).build()
+
         eventSource.start()
     }
 
