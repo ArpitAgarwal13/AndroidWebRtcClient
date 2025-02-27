@@ -73,6 +73,8 @@ class CompleteActivity : AppCompatActivity() {
     private var localPeerId: String = ""
     private var remotePeerId: String = ""
 
+    private var sseConnected = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_sample_peer_connection)
@@ -111,12 +113,16 @@ class CompleteActivity : AppCompatActivity() {
         startStreamingMedia()
 
 
+        localPeerId = generatePeerId()
         if (requestType.equals("startSession", ignoreCase = true)) {
             registerSession()
             openSSEConnection()
         } else if (requestType.equals("joinSession", ignoreCase = true)) {
-            registerSession()
             openSSEConnection()
+
+            while(!sseConnected) {}
+            registerSession()
+
         }
     }
 
@@ -488,6 +494,7 @@ class CompleteActivity : AppCompatActivity() {
         val eventSource = EventSource.Builder(object : EventHandler {
             override fun onOpen() {
                 Log.d(tag, "Connected to SSE Server, connection opened")
+                sseConnected = true
             }
 
             @Throws(Exception::class)
